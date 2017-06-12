@@ -1,22 +1,36 @@
 var express = require("express");
+var bodyParser = require("body-parser");
+var logger = require("morgan");
+var mongoose = require("mongoose");
 
-var mongojs = require("mongojs");
+
+var Note = require("./models/Note.js");
+var Article = require("./models/Article.js");
 
 var request = require("request");
-
 var cheerio = require("cheerio");
+
+mongoose.Promise = Promise;
 
 var app = express();
 
+app.use(logger("dev"));
+app.use(bodyParser.urlencoded({
+	extended: false
+}));
+
 app.use(express.static("public"));
 
-var databaseUrl = "scienceNews";
-var collections = ["scrapeData"];
 
-var db = mongojs(databaseUrl, collections);
+mongoose.connect("mongodb://localhost/scienceNews");
+var db = mongoose.connection;
 
 db.on("error", function(error){
-	console.log("Database Error:", error);
+	console.log("mongoose Error:", error);
+});
+
+db.once("open", function() {
+  console.log("Mongoose connection successful.");
 });
 
 app.get("/", function(req, res) {
@@ -24,8 +38,35 @@ app.get("/", function(req, res) {
 });
 
 
-app.get("/all", function(req, res){
-	db.scrapeData.find({}, function(err, found) {
+app.get("/scrape", function(req, res) {
+	request("http://www.sciencemag.org/news", function(error, response, html) {
+		var $ = cheerio.load(html);
+
+		$(".media__headline").each(function(i, element) {
+			var result = {};
+
+			result.title = $(this).children("a").text();
+			result.link = $(this).children("a").attr("href");
+
+			var entry = new Article(result);
+
+			entry.save(function (err, doc) {
+					if (err) {
+						console.log(err)
+					} else {
+						console.log(doc);
+					}
+			});
+		});
+	});
+
+	res.send("Scrape Complete");
+});
+
+
+
+app.get("/articles", function(req, res){
+	Article.find({}, function(err, found) {
 		if (err) {
 			console.log(err)
 		} else {
@@ -35,31 +76,39 @@ app.get("/all", function(req, res){
 });
 
 
-app.get("/scrape", function(req, res) {
-	request("http://www.sciencemag.org/news", function(error, response, html) {
-		var $ = cheerio.load(html);
+app.get("/articles/:id", function(req, res) {
+  Article.findOne({ "_id": req.params.id })
+  .populate("note")
+  .exec(function(error, doc) {
+    if (error) {
+      console.log(error);
+    }
+    else {
+      res.json(doc);
+    }
+  });
+});
 
-		$(".media__headline").each(function(i, element) {
-			var title = $(this).children("a").text();
-			var link = $(this).children("a").attr("href");
 
-			if (title && link) {
-				db.scrapeData.save({
-					title: title,
-					link: link
-				},
-				function (error, saved) {
-					if (error) {
-						console.log(error)
-					} else {
-						console.log(saved);
-					}
-				});
-			}
-		});
-	});
+app.post("/articles/:id", function(req, res) {
+  var newNote = new Note(req.body);
 
-	res.send("Scrape Complete");
+  newNote.save(function(error, doc) {
+    if (error) {
+      console.log(error);
+    }
+    else {
+      Article.findOneAndUpdate({ "_id": req.params.id }, { "note": doc._id })
+      .exec(function(err, doc) {
+        if (err) {
+          console.log(err);
+        }
+        else {
+          res.send(doc);
+        }
+      });
+    }
+  });
 });
 
 // Set the app to listen on port 3000
